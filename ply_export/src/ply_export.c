@@ -1,0 +1,743 @@
+/* Copyright (C) 2026 Ian Curington, Thames 3D Research
+
+    prc_ply_rw is free software: you can redistribute it and/or modify it
+    under the terms of the GNU Affero General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or (at
+    your option) any later version.
+
+    prc_ply_rw is distributed in the hope that it will be useful, but
+    WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero
+    General Public License for more details.
+
+    You should have received a copy of the GNU Affero General Public License
+    along with prc_ply_rw. If not, see <https://www.gnu.org/licenses/>.
+*/
+
+/* ====================================================================
+ * ply_export: read the tessellated geometry of a PRC file, or of the PRC
+ * stream in a 3D PDF, and write it as one PLY file -- binary little-endian
+ * by default, or ASCII or binary big-endian -- through nanoPRC's public
+ * read API and RPly.
+ *
+ * Every surface tessellation (PRC_API_TESS_3D and PRC_API_TESS_3D_Compressed)
+ * goes into the one mesh: PLY has no parts. Vertices stay shared as the
+ * reader gives them, so the file is indexed rather than one vertex per
+ * triangle corner.
+ *
+ * Each vertex carries:
+ *   - x, y, z;
+ *   - nx, ny, nz, from the file, or for a vertex without one the
+ *     area-weighted average of its triangles' normals;
+ *   - red, green, blue (and alpha, when any vertex is not opaque), as the
+ *     viewer demo shades it: the vertex's own material colour when the
+ *     tessellation styles each vertex, otherwise the face's material
+ *     diffuse colour times the vertex colour;
+ *   - s, t, when any face is textured.
+ *
+ * Textures are written beside the PLY as PNG, identical images once, and
+ * named by "comment TextureFile" header lines, the convention MeshLab reads
+ * and writes. With more than one texture each face also carries texnumber,
+ * the index of its TextureFile line.
+ *
+ * Usage:
+ *     nano_prc_ply_export <input.pdf|input.prc> <output.ply>
+ *                         [--ascii | --big-endian] [--no-normals]
+ *                         [--no-colors] [--no-texture]
+ *
+ * Like obj_export, positions are written as the reader gives them, in each
+ * tessellation's own coordinates: part placement transforms are not
+ * applied. Wire and markup tessellations are not exported.
+ * ==================================================================== */
+
+#include <prc_api.h>
+#include <rply.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <math.h>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
+#define NO_INDEX 0xFFFFFFFFu
+
+/* -------------------------------------------------------------------- */
+/* The mesh being assembled                                              */
+/* -------------------------------------------------------------------- */
+
+typedef struct
+{
+    float   position[3];
+    float   normal[3];
+    float   uv[2];
+    uint8_t color[4];
+    uint8_t has_normal;
+} out_vertex;
+
+typedef struct
+{
+    out_vertex *v;
+    uint32_t    nv, cap_v;
+    uint32_t   *tri;        /* 3 per triangle */
+    uint32_t   *texnum;     /* 1 per triangle */
+    uint32_t    nt, cap_t;
+} out_mesh;
+
+static int
+add_vertex(out_mesh *m, const out_vertex *v)
+{
+    if (m->nv == m->cap_v)
+    {
+        uint32_t cap = m->cap_v ? m->cap_v * 2 : 1024;
+        out_vertex *g = (out_vertex *)realloc(m->v, (size_t)cap * sizeof(out_vertex));
+
+        if (g == NULL || cap < m->cap_v)
+            return -1;
+        m->v = g;
+        m->cap_v = cap;
+    }
+    m->v[m->nv++] = *v;
+    return 0;
+}
+
+static int
+add_triangle(out_mesh *m, uint32_t a, uint32_t b, uint32_t c, uint32_t texnum)
+{
+    if (m->nt == m->cap_t)
+    {
+        uint32_t cap = m->cap_t ? m->cap_t * 2 : 1024;
+        uint32_t *g = (uint32_t *)realloc(m->tri, (size_t)cap * 3 * sizeof(uint32_t));
+        uint32_t *h;
+
+        if (g == NULL || cap < m->cap_t)
+            return -1;
+        m->tri = g;
+        h = (uint32_t *)realloc(m->texnum, (size_t)cap * sizeof(uint32_t));
+        if (h == NULL)
+            return -1;
+        m->texnum = h;
+        m->cap_t = cap;
+    }
+    m->tri[m->nt * 3] = a;
+    m->tri[m->nt * 3 + 1] = b;
+    m->tri[m->nt * 3 + 2] = c;
+    m->texnum[m->nt] = texnum;
+    m->nt++;
+    return 0;
+}
+
+static uint8_t
+to_byte(double c)
+{
+    if (!(c > 0.0))
+        return 0;
+    if (c >= 1.0)
+        return 255;
+    return (uint8_t)(c * 255.0 + 0.5);
+}
+
+/* -------------------------------------------------------------------- */
+/* Textures                                                              */
+/* -------------------------------------------------------------------- */
+
+typedef struct
+{
+    const unsigned char *data;  /* the reader's pixels, valid until release */
+    uint32_t width, height, num_channels;
+    char filename[256];         /* as named in the PLY header */
+} tracked_texture;
+
+typedef struct
+{
+    tracked_texture *t;
+    uint32_t count, cap;
+} texture_list;
+
+/* The TextureFile index of this face's image, writing it as a PNG the first
+   time it is seen. NO_INDEX if it could not be written. */
+static uint32_t
+texture_index(texture_list *tl, const prc_api_texture *tex, const char *stem_path,
+    const char *stem_name)
+{
+    size_t bytes = (size_t)tex->width * tex->height * tex->num_channels;
+    char full[600];
+    uint32_t i;
+
+    for (i = 0; i < tl->count; i++)
+    {
+        const tracked_texture *k = &tl->t[i];
+
+        if (k->width == tex->width && k->height == tex->height &&
+            k->num_channels == tex->num_channels && memcmp(k->data, tex->data, bytes) == 0)
+            return i;
+    }
+    if (tl->count == tl->cap)
+    {
+        uint32_t cap = tl->cap ? tl->cap * 2 : 8;
+        tracked_texture *g = (tracked_texture *)realloc(tl->t, (size_t)cap * sizeof(*g));
+
+        if (g == NULL)
+            return NO_INDEX;
+        tl->t = g;
+        tl->cap = cap;
+    }
+    snprintf(full, sizeof(full), "%s_tex_%u.png", stem_path, tl->count);
+    if (!stbi_write_png(full, (int)tex->width, (int)tex->height, (int)tex->num_channels,
+                        tex->data, (int)(tex->width * tex->num_channels)))
+    {
+        fprintf(stderr, "Warning: could not write texture %s; its faces written untextured\n", full);
+        return NO_INDEX;
+    }
+    tl->t[tl->count].data = tex->data;
+    tl->t[tl->count].width = tex->width;
+    tl->t[tl->count].height = tex->height;
+    tl->t[tl->count].num_channels = tex->num_channels;
+    snprintf(tl->t[tl->count].filename, sizeof(tl->t[tl->count].filename),
+             "%s_tex_%u.png", stem_name, tl->count);
+    return tl->count++;
+}
+
+/* -------------------------------------------------------------------- */
+/* Collecting one face's geometry                                        */
+/* -------------------------------------------------------------------- */
+
+typedef struct
+{
+    const prc_api_tess_vertex_buffer *vb;
+    uint32_t *remap;                /* buffer vertex -> output vertex */
+    const prc_api_material *material; /* or NULL */
+    uint8_t   per_vertex_material;
+    uint8_t   textured;
+    uint32_t  texnum;
+} face_source;
+
+/* The output vertex for buffer vertex `i`, adding it the first time. */
+static uint32_t
+output_vertex(out_mesh *m, face_source *fs, uint32_t i)
+{
+    const prc_api_vertex *pv;
+    out_vertex v;
+    double r, g, b, a;
+
+    if (fs->remap[i] != NO_INDEX)
+        return fs->remap[i];
+    pv = &fs->vb->vertices[i];
+    memset(&v, 0, sizeof(v));
+    memcpy(v.position, pv->position, sizeof(v.position));
+    if (pv->normal_set)
+    {
+        memcpy(v.normal, pv->normal, sizeof(v.normal));
+        v.has_normal = 1;
+    }
+    /* The reader returns v flipped (1 - v), for an image uploaded top row
+       first; the image itself is written as stored. PLY, like OBJ and like
+       PRC itself, puts v = 0 at the bottom of the image, so flip it back --
+       otherwise the texture comes out upside down. */
+    if (fs->textured && pv->uv_set)
+    {
+        v.uv[0] = pv->uv[0];
+        v.uv[1] = 1.0f - pv->uv[1];
+    }
+
+    /* As the viewer demo shades it. */
+    if (fs->per_vertex_material)
+    {
+        r = pv->diffuse[0]; g = pv->diffuse[1]; b = pv->diffuse[2];
+        a = pv->alpha;
+    }
+    else
+    {
+        r = pv->color[0]; g = pv->color[1]; b = pv->color[2];
+        a = 1.0;
+        if (fs->material != NULL)
+        {
+            r *= fs->material->diffuse[0];
+            g *= fs->material->diffuse[1];
+            b *= fs->material->diffuse[2];
+            a = fs->material->diffuse_alpha;
+        }
+    }
+    v.color[0] = to_byte(r);
+    v.color[1] = to_byte(g);
+    v.color[2] = to_byte(b);
+    v.color[3] = to_byte(a);
+
+    if (add_vertex(m, &v) != 0)
+        return NO_INDEX;
+    fs->remap[i] = m->nv - 1;
+    return fs->remap[i];
+}
+
+static int
+emit_triangle(out_mesh *m, face_source *fs, uint32_t i0, uint32_t i1, uint32_t i2,
+    uint32_t *skipped)
+{
+    uint32_t n = (uint32_t)fs->vb->num_vertices, a, b, c;
+
+    if (i0 >= n || i1 >= n || i2 >= n)
+    {
+        (*skipped)++;
+        return 0;
+    }
+    a = output_vertex(m, fs, i0);
+    b = output_vertex(m, fs, i1);
+    c = output_vertex(m, fs, i2);
+    if (a == NO_INDEX || b == NO_INDEX || c == NO_INDEX)
+        return -1;
+    return add_triangle(m, a, b, c, fs->textured ? fs->texnum : 0);
+}
+
+/* -------------------------------------------------------------------- */
+/* Normals for vertices that came without one                            */
+/* -------------------------------------------------------------------- */
+
+static void
+fill_missing_normals(out_mesh *m)
+{
+    uint32_t t, k;
+
+    for (t = 0; t < m->nt; t++)
+    {
+        const uint32_t *tri = &m->tri[t * 3];
+        const float *p0 = m->v[tri[0]].position;
+        const float *p1 = m->v[tri[1]].position;
+        const float *p2 = m->v[tri[2]].position;
+        float u[3], w[3], n[3];
+
+        for (k = 0; k < 3; k++)
+        {
+            u[k] = p1[k] - p0[k];
+            w[k] = p2[k] - p0[k];
+        }
+        /* Unnormalised: its length is twice the area, so the sum below is
+           area-weighted. */
+        n[0] = u[1] * w[2] - u[2] * w[1];
+        n[1] = u[2] * w[0] - u[0] * w[2];
+        n[2] = u[0] * w[1] - u[1] * w[0];
+        for (k = 0; k < 3; k++)
+        {
+            out_vertex *v = &m->v[tri[k]];
+
+            if (!v->has_normal)
+            {
+                v->normal[0] += n[0];
+                v->normal[1] += n[1];
+                v->normal[2] += n[2];
+            }
+        }
+    }
+    for (t = 0; t < m->nv; t++)
+    {
+        out_vertex *v = &m->v[t];
+
+        if (!v->has_normal)
+        {
+            float len = sqrtf(v->normal[0] * v->normal[0] + v->normal[1] * v->normal[1] +
+                              v->normal[2] * v->normal[2]);
+
+            if (len > 0.0f)
+            {
+                v->normal[0] /= len;
+                v->normal[1] /= len;
+                v->normal[2] /= len;
+            }
+        }
+    }
+}
+
+/* -------------------------------------------------------------------- */
+/* Writing                                                               */
+/* -------------------------------------------------------------------- */
+
+static void
+error_cb(p_ply ply, const char *message)
+{
+    (void)ply;
+    fprintf(stderr, "PLY: %s\n", message);
+}
+
+static int
+write_ply(const char *path, e_ply_storage_mode mode, const out_mesh *m,
+    const texture_list *tex, int with_normals, int with_colors, int with_alpha)
+{
+    int with_uv = tex->count > 0;
+    int with_texnum = tex->count > 1;
+    p_ply ply = ply_create(path, mode, error_cb, 0, NULL);
+    uint32_t i, k;
+    int ok = 0;
+
+    if (ply == NULL)
+        return -1;
+
+    if (!ply_add_comment(ply, "Generated by prc_ply_rw ply_export (c) Ian Curington, Thames 3D Research,") ||
+        !ply_add_comment(ply, "using the nanoPRC PRC library (c) CascadiaVoxel LLC. Both AGPLv3."))
+        goto out;
+    for (i = 0; i < tex->count; i++)
+    {
+        char line[300];
+
+        snprintf(line, sizeof(line), "TextureFile %s", tex->t[i].filename);
+        if (!ply_add_comment(ply, line))
+            goto out;
+    }
+
+    if (!ply_add_element(ply, "vertex", (long)m->nv) ||
+        !ply_add_scalar_property(ply, "x", PLY_FLOAT32) ||
+        !ply_add_scalar_property(ply, "y", PLY_FLOAT32) ||
+        !ply_add_scalar_property(ply, "z", PLY_FLOAT32))
+        goto out;
+    if (with_normals &&
+        (!ply_add_scalar_property(ply, "nx", PLY_FLOAT32) ||
+         !ply_add_scalar_property(ply, "ny", PLY_FLOAT32) ||
+         !ply_add_scalar_property(ply, "nz", PLY_FLOAT32)))
+        goto out;
+    if (with_colors &&
+        (!ply_add_scalar_property(ply, "red", PLY_UINT8) ||
+         !ply_add_scalar_property(ply, "green", PLY_UINT8) ||
+         !ply_add_scalar_property(ply, "blue", PLY_UINT8) ||
+         (with_alpha && !ply_add_scalar_property(ply, "alpha", PLY_UINT8))))
+        goto out;
+    if (with_uv &&
+        (!ply_add_scalar_property(ply, "s", PLY_FLOAT32) ||
+         !ply_add_scalar_property(ply, "t", PLY_FLOAT32)))
+        goto out;
+
+    if (!ply_add_element(ply, "face", (long)m->nt) ||
+        !ply_add_list_property(ply, "vertex_indices", PLY_UINT8, PLY_INT32))
+        goto out;
+    if (with_texnum && !ply_add_scalar_property(ply, "texnumber", PLY_INT32))
+        goto out;
+
+    if (!ply_write_header(ply))
+        goto out;
+
+    for (i = 0; i < m->nv; i++)
+    {
+        const out_vertex *v = &m->v[i];
+
+        for (k = 0; k < 3; k++)
+            if (!ply_write(ply, v->position[k]))
+                goto out;
+        if (with_normals)
+            for (k = 0; k < 3; k++)
+                if (!ply_write(ply, v->normal[k]))
+                    goto out;
+        if (with_colors)
+            for (k = 0; k < (uint32_t)(with_alpha ? 4 : 3); k++)
+                if (!ply_write(ply, v->color[k]))
+                    goto out;
+        if (with_uv)
+            for (k = 0; k < 2; k++)
+                if (!ply_write(ply, v->uv[k]))
+                    goto out;
+    }
+    for (i = 0; i < m->nt; i++)
+    {
+        if (!ply_write(ply, 3))
+            goto out;
+        for (k = 0; k < 3; k++)
+            if (!ply_write(ply, m->tri[i * 3 + k]))
+                goto out;
+        if (with_texnum && !ply_write(ply, m->texnum[i]))
+            goto out;
+    }
+    ok = 1;
+
+out:
+    if (!ply_close(ply))
+        ok = 0;
+    return ok ? 0 : -1;
+}
+
+/* The output path without its .ply, and that stem without its directory. */
+static void
+split_stem(const char *path, char *stem_path, char *stem_name, size_t size)
+{
+    const char *slash1, *slash2, *slash;
+    char *dot;
+
+    strncpy(stem_path, path, size - 1);
+    stem_path[size - 1] = '\0';
+    dot = strrchr(stem_path, '.');
+    slash1 = strrchr(stem_path, '/');
+    slash2 = strrchr(stem_path, '\\');
+    slash = (slash1 > slash2) ? slash1 : slash2;
+    if (dot != NULL && (slash == NULL || dot > slash))
+        *dot = '\0';
+    strncpy(stem_name, slash ? slash + 1 : stem_path, size - 1);
+    stem_name[size - 1] = '\0';
+}
+
+static void
+usage(const char *prog)
+{
+    fprintf(stderr,
+        "Usage: %s <input.pdf|input.prc> <output.ply> [options]\n"
+        "  Writes the tessellated surfaces as one PLY mesh, binary little-endian\n"
+        "  by default, with any textures as PNG files beside it.\n"
+        "  --ascii         write ASCII PLY\n"
+        "  --big-endian    write binary big-endian PLY\n"
+        "  --no-normals    leave out nx, ny, nz\n"
+        "  --no-colors     leave out red, green, blue and alpha\n"
+        "  --no-texture    leave out s, t and the texture images\n", prog);
+}
+
+int
+main(int argc, char *argv[])
+{
+    const char *input_path = NULL, *output_path = NULL;
+    e_ply_storage_mode mode = PLY_LITTLE_ENDIAN;
+    int with_normals = 1, with_colors = 1, with_texture = 1, with_alpha = 0;
+    int a, ret = 1;
+    char stem_path[512], stem_name[512];
+
+    prc_context *ctx = NULL;
+    prc_api_data data = NULL;
+    prc_api_product *model_tree = NULL;
+    prc_api_tess *tesses = NULL;
+    uint32_t num_parts = 0, num_products = 0, num_markups = 0;
+    uint32_t total_tess = 0, total_line_tess = 0, num_extra = 0;
+    uint32_t k, surfaces = 0, skipped = 0, missing_normals = 0;
+    out_mesh mesh;
+    texture_list textures;
+
+    memset(&mesh, 0, sizeof(mesh));
+    memset(&textures, 0, sizeof(textures));
+
+    for (a = 1; a < argc; a++)
+    {
+        if (strcmp(argv[a], "--ascii") == 0)
+            mode = PLY_ASCII;
+        else if (strcmp(argv[a], "--big-endian") == 0)
+            mode = PLY_BIG_ENDIAN;
+        else if (strcmp(argv[a], "--no-normals") == 0)
+            with_normals = 0;
+        else if (strcmp(argv[a], "--no-colors") == 0)
+            with_colors = 0;
+        else if (strcmp(argv[a], "--no-texture") == 0)
+            with_texture = 0;
+        else if (argv[a][0] == '-' && argv[a][1] == '-')
+        {
+            usage(argv[0]);
+            return 1;
+        }
+        else if (input_path == NULL)
+            input_path = argv[a];
+        else if (output_path == NULL)
+            output_path = argv[a];
+        else
+        {
+            usage(argv[0]);
+            return 1;
+        }
+    }
+    if (input_path == NULL || output_path == NULL)
+    {
+        usage(argv[0]);
+        return 1;
+    }
+    split_stem(output_path, stem_path, stem_name, sizeof(stem_path));
+
+    ctx = prc_api_new_context(NULL);
+    if (ctx == NULL)
+    {
+        fprintf(stderr, "Error: prc_api_new_context failed\n");
+        return 1;
+    }
+    data = prc_api_open_contents(ctx, input_path);
+    if (data == NULL)
+    {
+        fprintf(stderr, "Error: could not open %s\n", input_path);
+        prc_api_release_context(ctx);
+        return 1;
+    }
+    if (prc_api_prep_model_tree(ctx, data, &num_parts, &num_products, &num_markups) < 0 ||
+        prc_api_create_model_tree(ctx, data, &model_tree, num_parts, num_products, num_markups) < 0 ||
+        prc_api_get_number_tessellations(ctx, data, model_tree, &total_tess, &total_line_tess,
+                                         &num_extra, 0) < 0)
+    {
+        fprintf(stderr, "Error: could not build the model tree of %s\n", input_path);
+        prc_api_print_error_stack(ctx);
+        goto cleanup;
+    }
+    if (total_tess > 0)
+    {
+        tesses = (prc_api_tess *)calloc(total_tess, sizeof(prc_api_tess));
+        if (tesses == NULL)
+        {
+            fprintf(stderr, "Error: out of memory\n");
+            goto cleanup;
+        }
+    }
+
+    for (k = 0; k < total_tess; k++)
+    {
+        prc_api_tess *tess = &tesses[k];
+        uint8_t has_lines = 0;
+        uint32_t j, faces_to_walk;
+
+        tess->num_faces = prc_api_get_number_faces(ctx, data, k);
+        tess->tess_faces = (prc_api_face *)calloc(tess->num_faces ? tess->num_faces : 1,
+                                                  sizeof(prc_api_face));
+        if (tess->tess_faces == NULL)
+        {
+            fprintf(stderr, "Error: out of memory\n");
+            goto cleanup;
+        }
+        if (prc_api_initialize_tessellation(ctx, data, model_tree, k, tess, NULL, &has_lines) < 0)
+        {
+            fprintf(stderr, "Error: could not initialise tessellation %u\n", k);
+            prc_api_print_error_stack(ctx);
+            goto cleanup;
+        }
+        if (tess->type != PRC_API_TESS_3D && tess->type != PRC_API_TESS_3D_Compressed)
+            continue;
+        for (j = 0; j < tess->num_faces; j++)
+        {
+            if (prc_api_get_tessellation_vertices(ctx, data, k, j, tess->tess_faces + j, tess) < 0)
+            {
+                fprintf(stderr, "Error: could not read tessellation %u face %u\n", k, j);
+                prc_api_print_error_stack(ctx);
+                goto cleanup;
+            }
+        }
+        surfaces++;
+
+        /* A compressed tessellation gives every face the same complete
+           mesh -- face_index only selects a style there -- so walking every
+           face would write the mesh once per face (see obj_export). */
+        faces_to_walk = (tess->type == PRC_API_TESS_3D_Compressed) ? 1 : (uint32_t)tess->num_faces;
+
+        for (j = 0; j < faces_to_walk; j++)
+        {
+            prc_api_face *face = &tess->tess_faces[j];
+            face_source fs;
+            size_t p;
+            uint32_t i;
+
+            memset(&fs, 0, sizeof(fs));
+            fs.vb = (tess->type == PRC_API_TESS_3D_Compressed) ? &tess->tess_vertices
+                                                              : &face->face_vertices;
+            if (fs.vb->vertices == NULL || fs.vb->num_vertices == 0)
+                continue;
+            fs.remap = (uint32_t *)malloc(fs.vb->num_vertices * sizeof(uint32_t));
+            if (fs.remap == NULL)
+            {
+                fprintf(stderr, "Error: out of memory\n");
+                goto cleanup;
+            }
+            for (i = 0; i < (uint32_t)fs.vb->num_vertices; i++)
+                fs.remap[i] = NO_INDEX;
+
+            fs.per_vertex_material = prc_api_vertices_have_material(ctx, tess, j) ? 1 : 0;
+            fs.material = face->is_material ? &face->material
+                        : tess->is_material ? &tess->tess_material : NULL;
+            if (with_texture && face->is_texture && face->texture.data != NULL &&
+                face->texture.width > 0 && face->texture.height > 0)
+            {
+                fs.texnum = texture_index(&textures, &face->texture, stem_path, stem_name);
+                fs.textured = fs.texnum != NO_INDEX;
+            }
+
+            for (p = 0; p < face->num_graphic_primitives; p++)
+            {
+                prc_api_graphic_primitive prim;
+                size_t m;
+                int rc = 0;
+
+                if (prc_api_get_graphics_primitive(ctx, data, tess, j, (uint32_t)p, &prim) < 0)
+                    continue;
+                if (prim.type == PRC_API_TRIANGLES)
+                {
+                    for (m = 0; m + 2 < prim.num_indices && rc == 0; m += 3)
+                        rc = emit_triangle(&mesh, &fs, prim.indices[m], prim.indices[m + 1],
+                                           prim.indices[m + 2], &skipped);
+                }
+                else if (prim.type == PRC_API_STRIP)
+                {
+                    for (m = 2; m < prim.num_indices && rc == 0; m++)
+                    {
+                        if (m % 2 == 0)
+                            rc = emit_triangle(&mesh, &fs, prim.indices[m - 2], prim.indices[m - 1],
+                                               prim.indices[m], &skipped);
+                        else
+                            rc = emit_triangle(&mesh, &fs, prim.indices[m - 1], prim.indices[m - 2],
+                                               prim.indices[m], &skipped);
+                    }
+                }
+                else if (prim.type == PRC_API_FAN)
+                {
+                    for (m = 2; m < prim.num_indices && rc == 0; m++)
+                        rc = emit_triangle(&mesh, &fs, prim.indices[0], prim.indices[m - 1],
+                                           prim.indices[m], &skipped);
+                }
+                if (rc != 0)
+                {
+                    free(fs.remap);
+                    fprintf(stderr, "Error: out of memory\n");
+                    goto cleanup;
+                }
+            }
+            free(fs.remap);
+        }
+    }
+
+    if (mesh.nt == 0)
+    {
+        fprintf(stderr, "Error: %s has no surface triangles to export\n", input_path);
+        goto cleanup;
+    }
+
+    {
+        /* nanoPRC's writer gives an item without a material this colour
+           (0.72, 0.42, 0.20; prc_write_add_default_style), so a PLY with no
+           colours comes back from PRC with every vertex this colour. Writing
+           it out would make the round trip add colours the original never
+           had, so a mesh that is uniformly this colour is written without
+           colour properties. */
+        static const uint8_t write_default[4] = { 184, 107, 51, 255 };
+        int uniform_default = 1;
+
+        for (k = 0; k < mesh.nv; k++)
+        {
+            if (!mesh.v[k].has_normal)
+                missing_normals++;
+            if (mesh.v[k].color[3] != 255)
+                with_alpha = 1;
+            if (memcmp(mesh.v[k].color, write_default, 4) != 0)
+                uniform_default = 0;
+        }
+        if (uniform_default)
+            with_colors = 0;
+    }
+    if (with_normals && missing_normals > 0)
+        fill_missing_normals(&mesh);
+
+    if (write_ply(output_path, mode, &mesh, &textures, with_normals, with_colors, with_alpha) != 0)
+    {
+        fprintf(stderr, "Error: could not write %s\n", output_path);
+        goto cleanup;
+    }
+    printf("Wrote %s (%s): %u vertices, %u triangles from %u surface tessellations, "
+           "%u textures; %u vertices given computed normals, %u triangles with a bad index "
+           "skipped\n", output_path,
+           mode == PLY_ASCII ? "ascii" : mode == PLY_BIG_ENDIAN ? "binary big-endian"
+                                                               : "binary little-endian",
+           mesh.nv, mesh.nt, surfaces, textures.count, with_normals ? missing_normals : 0,
+           skipped);
+    ret = 0;
+
+cleanup:
+    free(mesh.v); free(mesh.tri); free(mesh.texnum);
+    free(textures.t);
+    if (ctx != NULL)
+    {
+        if (data != NULL)
+            prc_api_release_data(ctx, data, tesses, total_tess, NULL, 0, NULL, 0, model_tree);
+        prc_api_release_context(ctx);
+    }
+    return ret;
+}

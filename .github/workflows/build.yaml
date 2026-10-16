@@ -1,0 +1,76 @@
+name: build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      nanoprc_ref:
+        description: nanoPRC branch, tag or commit to build against
+        default: main
+
+env:
+  NANOPRC_REPO: mvrhel/nanoPRC
+  NANOPRC_REF: ${{ github.event.inputs.nanoprc_ref || 'main' }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout prc_ply_rw
+        uses: actions/checkout@v5
+        with:
+          path: prc_ply_rw
+
+      # nanoPRC is checked out beside this repository, never inside it. Only
+      # its zlib submodule is needed: SDL, imgui and MatrixUtil serve its demos.
+      - name: Checkout nanoPRC
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.NANOPRC_REPO }}
+          ref: ${{ env.NANOPRC_REF }}
+          path: nanoPRC
+
+      - name: Fetch nanoPRC's zlib submodule
+        run: git -C nanoPRC submodule update --init --depth 1 thirdparty/zlib
+
+      - name: Configure
+        run: cmake -S prc_ply_rw -B build -DNANOPRC_SOURCE_DIR="$GITHUB_WORKSPACE/nanoPRC" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Round-trip the test files through PRC, PDF and all three PLY encodings
+        run: |
+          if [ -d build/bin/Release ]; then bin=build/bin/Release; else bin=build/bin; fi
+          if [ "$RUNNER_OS" = Windows ]; then py=python; else py=python3; fi
+          bash prc_ply_rw/tests/roundtrip.sh "$bin" roundtrip "$py"
+
+  c99:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout prc_ply_rw
+        uses: actions/checkout@v5
+        with:
+          path: prc_ply_rw
+
+      - name: Checkout nanoPRC
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.NANOPRC_REPO }}
+          ref: ${{ env.NANOPRC_REF }}
+          path: nanoPRC
+
+      - name: Strict C99 check
+        run: python3 prc_ply_rw/tests/check_c99.py --nanoprc nanoPRC -v
