@@ -17,6 +17,7 @@ little-endian and binary big-endian — through [RPly](http://w3.impa.br/~diego/
 ```
 nano_prc_ply_import <input.ply> [output.prc] [output.pdf]
                     [--triangles] [--no-normals] [--no-colors] [--no-texture]
+                    [--quant-tolerance F]
 ```
 
 What it reads:
@@ -40,6 +41,11 @@ What it reads:
   and meshes with a vertex shared by disconnected triangle fans, are written as plain triangles,
   because compressed tessellation carries neither textures nor colours, and some Adobe Acrobat builds
   misread that vertex case.
+- Some small compressed meshes give an empty model tree in Adobe Acrobat although nanoPRC reads them
+  back correctly; which ones depends on the exact encoding, not on any simple property of the mesh.
+  If a file comes up empty, write it again with `--triangles`, which has always opened, or with
+  another `--quant-tolerance` (the compressed encoding's tolerance as a fraction of the bounding-box
+  diagonal, default `1e-6`).
 - A coloured mesh is given a white material, so its colours show as they are.
 - A PNG texture of 256 pixels or more on both axes is reported: it currently gives an empty model tree
   in Adobe Acrobat. JPEG does not.

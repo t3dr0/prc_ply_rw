@@ -46,7 +46,7 @@
  * Usage:
  *     nano_prc_ply_import <input.ply> [output.prc] [output.pdf]
  *                         [--triangles] [--no-normals] [--no-colors]
- *                         [--no-texture]
+ *                         [--no-texture] [--quant-tolerance F]
  *
  * Output paths default to the input's name with .ply replaced.
  *
@@ -66,6 +66,13 @@
 
 #define PLY_NO_INDEX 0xFFFFFFFFu
 #define MAX_TEXTURE_FILES 64
+
+/* Quantization tolerance of a compressed tessellation, as a fraction of the
+   bounding-box diagonal: the write API's own default. Some small meshes give
+   an empty model tree in Adobe Acrobat at one tolerance and open at another
+   (a 4-triangle flat strip fails at 1e-6 and opens at 6.83e-6; a 3-triangle
+   one does the reverse), so --quant-tolerance is there to try another. */
+#define PLY_IMPORT_QUANT_TOLERANCE 1e-6
 
 /* -------------------------------------------------------------------- */
 /* Small growable arrays                                                 */
@@ -1246,7 +1253,11 @@ usage(const char *prog)
         "                  written as triangles).\n"
         "  --no-normals    ignore the file's normals (the reader computes them)\n"
         "  --no-colors     ignore vertex and face colours\n"
-        "  --no-texture    ignore texture coordinates and TextureFile comments\n", prog);
+        "  --no-texture    ignore texture coordinates and TextureFile comments\n"
+        "  --quant-tolerance F\n"
+        "                  compressed tessellation's quantization tolerance, as a\n"
+        "                  fraction of the bounding-box diagonal (default %g)\n",
+        prog, PLY_IMPORT_QUANT_TOLERANCE);
 }
 
 int
@@ -1259,6 +1270,7 @@ main(int argc, char *argv[])
     int force_triangles = 0, ignore_normals = 0, ignore_colors = 0, ignore_texture = 0;
     int a, rc = 1, color_mode = 0, color_alpha = 0, want_texture;
     prc_write_tolerance tol = prc_write_tol_relative(1e-6);
+    double quant_tolerance = PLY_IMPORT_QUANT_TOLERANCE;
     uint32_t nonmanifold_parts = 0, dropped_normals = 0;
     char format[64];
 
@@ -1293,6 +1305,15 @@ main(int argc, char *argv[])
             ignore_colors = 1;
         else if (strcmp(argv[a], "--no-texture") == 0)
             ignore_texture = 1;
+        else if (strcmp(argv[a], "--quant-tolerance") == 0 && a + 1 < argc)
+        {
+            quant_tolerance = atof(argv[++a]);
+            if (!(quant_tolerance > 0.0))
+            {
+                usage(argv[0]);
+                return 1;
+            }
+        }
         else if (argv[a][0] == '-' && argv[a][1] == '-')
         {
             usage(argv[0]);
@@ -1514,6 +1535,8 @@ main(int argc, char *argv[])
                 }
             }
         }
+        if (t->kind == PRC_API_WRITE_TESS_KIND_COMPRESSED)
+            t->tolerance = prc_write_tol_relative(quant_tolerance);
         t->face_tri_counts = &s->face_tri_count;
         t->num_faces = 1;
         if (has_normals)
