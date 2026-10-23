@@ -68,10 +68,8 @@
 #define MAX_TEXTURE_FILES 64
 
 /* Quantization tolerance of a compressed tessellation, as a fraction of the
-   bounding-box diagonal: the write API's own default. Some small meshes give
-   an empty model tree in Adobe Acrobat at one tolerance and open at another
-   (a 4-triangle flat strip fails at 1e-6 and opens at 6.83e-6; a 3-triangle
-   one does the reverse), so --quant-tolerance is there to try another. */
+   bounding-box diagonal: the write API's own default. --quant-tolerance
+   changes it. */
 #define PLY_IMPORT_QUANT_TOLERANCE 1e-6
 
 /* -------------------------------------------------------------------- */
@@ -1393,10 +1391,6 @@ main(int argc, char *argv[])
                 free(ti->bytes);
                 ti->bytes = NULL;
             }
-            else if (ti->format == PRC_API_WRITE_TEXTURE_PNG && ti->width >= 256 && ti->height >= 256)
-                fprintf(stderr, "warning: %s is a PNG of %ux%u; a PNG of 256 or more on both "
-                        "axes currently gives an empty model tree in Acrobat. JPEG does not.\n",
-                        img, ti->width, ti->height);
         }
         num_groups = mesh.num_texture_files;
     }
@@ -1624,8 +1618,8 @@ main(int argc, char *argv[])
     children[0] = &node;
     root.children = children;
     root.num_children = 1;
-    /* The root is an empty part; its box must be real, not zero, or Acrobat
-       blanks the tree beneath it. */
+    /* The root is an empty part. Its box is still written, so it is given the
+       part's box. */
     root.has_empty_part = 1;
 
     if (prc_api_write_prc_buffer(ctx, NULL, &root, tess, num_subs, &prc_buf, &prc_size) != 0)
