@@ -36,11 +36,10 @@
  * one tessellation, or with several texture files one per texnumber, since
  * a PRC representation item carries one texture.
  *
- * Geometry goes out as compressed tessellation by default. As in
- * obj_import, some meshes are written as plain triangles instead: a
- * textured one and a coloured one, because the compressed encoder has
- * neither a texture nor a colour path. --triangles writes everything that
- * way.
+ * Geometry goes out as compressed tessellation by default, textured or
+ * not. A coloured mesh is written as plain triangles instead, because the
+ * compressed encoder has no colour path. --triangles writes everything
+ * that way.
  *
  * Usage:
  *     nano_prc_ply_import <input.ply> [output.prc] [output.pdf]
@@ -1242,8 +1241,8 @@ usage(const char *prog)
         "Usage: %s <input.ply> [output.prc] [output.pdf] [options]\n"
         "  Writes a PLY file (ASCII or binary) as PRC and a 3D PDF.\n"
         "  --triangles     write uncompressed triangles (default: compressed,\n"
-        "                  except textured or coloured meshes, which are\n"
-        "                  written as triangles).\n"
+        "                  except coloured meshes, which are written as\n"
+        "                  triangles).\n"
         "  --no-normals    ignore the file's normals (the reader computes them)\n"
         "  --no-colors     ignore vertex and face colours\n"
         "  --no-texture    ignore texture coordinates and TextureFile comments\n"
@@ -1482,7 +1481,7 @@ main(int argc, char *argv[])
 
         t = &tess[num_subs];
         ri = &items[num_subs];
-        t->kind = (force_triangles || s->textured || s->colored)
+        t->kind = (force_triangles || s->colored)
             ? PRC_API_WRITE_TESS_KIND_TRIANGLES : PRC_API_WRITE_TESS_KIND_COMPRESSED;
         t->positions = s->positions;
         t->num_positions = s->num_positions;
