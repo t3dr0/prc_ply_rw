@@ -21,11 +21,10 @@
 #
 #   tests/roundtrip.sh <bin dir> <scratch dir> [python]
 #
-# Written as plain triangles (--triangles) the comparison must be exact.
-# Written compressed, only the triangle count is checked: nanoPRC's
-# compressed write-and-read currently reverses the winding of some
-# triangles (5 of the cube's 12, on 16 October 2026), a defect in nanoPRC
-# rather than in these tools.
+# Each file is written both as plain triangles (--triangles) and compressed,
+# and both comparisons must be exact. Compressed needs a nanoPRC that keeps
+# each triangle's winding (#202) and writes and reads point colours on the
+# right corners (#199, #201); older ones reverse some triangles.
 
 set -euo pipefail
 
@@ -55,23 +54,10 @@ for f in cube cube_colors quad_textured strip; do
         "$imp" be.ply c.prc c.pdf $opt > /dev/null
         "$exp" c.pdf back.ply --ascii > /dev/null
 
-        if [ "$mode" = triangles ]; then
-            if result=$("$py" "$here/compare_ply.py" "$f.ply" back.ply); then
-                echo "ok    $f ($mode): ${result##*$'\n'}"
-            else
-                echo "FAIL  $f ($mode)"; echo "$result"; fail=1
-            fi
+        if result=$("$py" "$here/compare_ply.py" "$f.ply" back.ply); then
+            echo "ok    $f ($mode): ${result##*$'\n'}"
         else
-            # compare_ply.py fails on the reversed triangles; only its count
-            # of expected triangles is wanted here.
-            want=$( ("$py" "$here/compare_ply.py" "$f.ply" back.ply || true) | head -1 |
-                    sed 's/.*expected \([0-9]*\).*/\1/')
-            got=$(grep -m1 '^element face' back.ply | awk '{print $3}')
-            if [ "$want" = "$got" ]; then
-                echo "ok    $f ($mode): $got triangles"
-            else
-                echo "FAIL  $f ($mode): expected $want triangles, got $got"; fail=1
-            fi
+            echo "FAIL  $f ($mode)"; echo "$result"; fail=1
         fi
     done
 done

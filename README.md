@@ -37,8 +37,8 @@ What it reads:
 
 - A PLY file has no parts, so the model is one part named after the file. It holds one tessellation,
   or one per texture when a file names several.
-- Geometry is written as PRC compressed tessellation where possible, textured or not. Coloured meshes
-  are written as plain triangles, because nanoPRC's compressed encoder has no colour path.
+- Geometry is written as PRC compressed tessellation, textured, coloured or neither. `--triangles`
+  writes plain triangles instead. Coloured meshes need a nanoPRC that writes compressed colours.
 - `--quant-tolerance` sets the compressed encoding's tolerance as a fraction of the bounding-box
   diagonal (default `1e-6`).
 - A coloured mesh is given a white material, so its colours show as they are.
