@@ -1599,11 +1599,24 @@ main(int argc, char *argv[])
         }
         fclose(out);
     }
-    if (prc_api_pdf_embed_prc(ctx, pdf_path, prc_buf, prc_size, NULL) != 0)
     {
-        fprintf(stderr, "Writing PDF failed\n");
-        prc_api_print_error_stack(ctx);
-        goto done;
+        /* A default view aimed at the model. Without a camera Adobe Acrobat
+           often shows nothing until the model is fitted by hand, turns it
+           about a point away from it, and does nothing on Home. No node here
+           carries a transform, so the root's box is the placed model's. */
+        prc_pdf_view_spec view;
+        prc_pdf_write_options pdf_opts;
+
+        prc_api_pdf_view_from_bounds(root.bbox_min, root.bbox_max, &view);
+        memset(&pdf_opts, 0, sizeof(pdf_opts));
+        pdf_opts.views = &view;
+        pdf_opts.num_views = 1;
+        if (prc_api_pdf_embed_prc(ctx, pdf_path, prc_buf, prc_size, &pdf_opts) != 0)
+        {
+            fprintf(stderr, "Writing PDF failed\n");
+            prc_api_print_error_stack(ctx);
+            goto done;
+        }
     }
 
     if (dropped_normals)
