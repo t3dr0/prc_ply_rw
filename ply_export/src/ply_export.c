@@ -45,9 +45,10 @@
  *                         [--ascii | --big-endian] [--no-normals]
  *                         [--no-colors] [--no-texture]
  *
- * Like obj_export, positions are written as the reader gives them, in each
- * tessellation's own coordinates: part placement transforms are not
- * applied. Wire and markup tessellations are not exported.
+ * Each tessellation is written wherever a part of the model tree draws
+ * it, moved into place by the transforms from the root down to that part;
+ * one drawn by no part is reported and not written. Wire and markup
+ * tessellations are not exported.
  * ==================================================================== */
 
 #include <prc_api.h>
@@ -201,6 +202,160 @@ texture_index(texture_list *tl, const prc_api_texture *tex, const char *stem_pat
 }
 
 /* -------------------------------------------------------------------- */
+/* Where each tessellation is drawn                                      */
+/* -------------------------------------------------------------------- */
+
+/* One place a tessellation is drawn: its index and the transform from the
+   root of the model tree down to the part that draws it. Geometry is often
+   stored around its own origin and placed by these transforms; written
+   without them, the parts of an assembly pile up at the origin. */
+typedef struct
+{
+    uint32_t tess;
+    prc_api_transform xform;
+} tess_instance;
+
+typedef struct
+{
+    tess_instance *items;
+    size_t count, cap;
+} instance_list;
+
+static int
+add_instance(instance_list *l, uint32_t tess, const prc_api_transform *xform)
+{
+    if (l->count == l->cap)
+    {
+        size_t cap = l->cap ? l->cap * 2 : 64;
+        tess_instance *g = (tess_instance *)realloc(l->items, cap * sizeof(*g));
+
+        if (g == NULL)
+            return -1;
+        l->items = g;
+        l->cap = cap;
+    }
+    l->items[l->count].tess = tess;
+    l->items[l->count].xform = *xform;
+    l->count++;
+    return 0;
+}
+
+/* Walks the model tree as demos/stl_export in nanoPRC does, composing each
+   product's own placement (prc_api_product::location) after its parents'
+   with prc_api_update_transform, and lists every tessellation each part
+   draws with that transform. A part's geometry is on the part itself or on
+   its representation items, which can nest in sets to a depth the file
+   chooses, so those are visited from an explicit stack. Tessellations are
+   looked up by part_detail_index, the API's numbering, which differs from
+   the file's wherever parts share a file tessellation. */
+static int
+collect_instances(prc_context *ctx, const prc_api_product *node, prc_api_transform parent,
+    uint32_t total_tess, instance_list *out, uint8_t *tess_drawn)
+{
+    prc_api_transform world = parent;
+    size_t k;
+
+    prc_api_update_transform(ctx, &world, (prc_api_transform *)&node->location);
+
+    if (node->part != NULL)
+    {
+        const prc_api_part **stack;
+        size_t depth = 0, capacity = 16;
+
+        stack = (const prc_api_part **)malloc(capacity * sizeof(*stack));
+        if (stack == NULL)
+            return -1;
+        stack[depth++] = node->part;
+        while (depth > 0)
+        {
+            const prc_api_part *item = stack[--depth];
+            size_t ri;
+
+            if (item->biased_tess_index > 0 && item->part_detail_index < total_tess)
+            {
+                if (add_instance(out, item->part_detail_index, &world) != 0)
+                {
+                    free((void *)stack);
+                    return -1;
+                }
+                tess_drawn[item->part_detail_index] = 1;
+            }
+            for (ri = item->num_rep_items; ri > 0; ri--)
+            {
+                if (depth == capacity)
+                {
+                    const prc_api_part **grown =
+                        (const prc_api_part **)realloc((void *)stack, capacity * 2 * sizeof(*stack));
+
+                    if (grown == NULL)
+                    {
+                        free((void *)stack);
+                        return -1;
+                    }
+                    stack = grown;
+                    capacity *= 2;
+                }
+                stack[depth++] = &item->rep_items[ri - 1];
+            }
+        }
+        free((void *)stack);
+    }
+
+    for (k = 0; k < node->num_children; k++)
+        if (collect_instances(ctx, &node->children[k], world, total_tess, out, tess_drawn) != 0)
+            return -1;
+    return 0;
+}
+
+/* The transform's linear (3x3) part applied to a normal, renormalised.
+   Exact for rotations, mirrors and uniform scale; under non-uniform scale or
+   shear a normal strictly needs the inverse transpose, which is not
+   attempted (as in nanoPRC's demos/stl_export). Positions are always
+   exact. */
+static void
+transform_normal(const prc_api_transform *xform, const float in[3], float out[3])
+{
+    const double *m;
+    float len;
+
+    if (xform->is_identity)
+    {
+        out[0] = in[0]; out[1] = in[1]; out[2] = in[2];
+        return;
+    }
+    m = xform->matrix;
+    out[0] = (float)(m[0] * in[0] + m[4] * in[1] + m[8]  * in[2]);
+    out[1] = (float)(m[1] * in[0] + m[5] * in[1] + m[9]  * in[2]);
+    out[2] = (float)(m[2] * in[0] + m[6] * in[1] + m[10] * in[2]);
+    len = sqrtf(out[0] * out[0] + out[1] * out[1] + out[2] * out[2]);
+    if (len > 1e-7f)
+    {
+        out[0] /= len; out[1] /= len; out[2] /= len;
+    }
+    else
+    {
+        out[0] = in[0]; out[1] = in[1]; out[2] = in[2];
+    }
+}
+
+/* 1 if the transform mirrors (its linear part has a negative determinant).
+   A mirrored triangle's corners then run the other way round, so they are
+   swapped back to keep the face pointing outward. */
+static int
+transform_mirrors(const prc_api_transform *xform)
+{
+    const double *m = xform->matrix;
+    double det;
+
+    if (xform->is_identity)
+        return 0;
+    det = m[0] * (m[5] * m[10] - m[9] * m[6])
+        - m[4] * (m[1] * m[10] - m[9] * m[2])
+        + m[8] * (m[1] * m[6] - m[5] * m[2]);
+    return det < 0.0;
+}
+
+/* -------------------------------------------------------------------- */
 /* Collecting one face's geometry                                        */
 /* -------------------------------------------------------------------- */
 
@@ -212,6 +367,8 @@ typedef struct
     uint8_t   per_vertex_material;
     uint8_t   textured;
     uint32_t  texnum;
+    const prc_api_transform *xform; /* where this instance is drawn */
+    int       mirror;               /* see transform_mirrors */
 } face_source;
 
 /* The output vertex for buffer vertex `i`, adding it the first time. */
@@ -226,10 +383,18 @@ output_vertex(out_mesh *m, face_source *fs, uint32_t i)
         return fs->remap[i];
     pv = &fs->vb->vertices[i];
     memset(&v, 0, sizeof(v));
-    memcpy(v.position, pv->position, sizeof(v.position));
+    {
+        double in[3], p[3];
+
+        in[0] = pv->position[0]; in[1] = pv->position[1]; in[2] = pv->position[2];
+        prc_api_transform_point(fs->xform, in, p);
+        v.position[0] = (float)p[0];
+        v.position[1] = (float)p[1];
+        v.position[2] = (float)p[2];
+    }
     if (pv->normal_set)
     {
-        memcpy(v.normal, pv->normal, sizeof(v.normal));
+        transform_normal(fs->xform, pv->normal, v.normal);
         v.has_normal = 1;
     }
     /* The reader returns v flipped (1 - v), for an image uploaded top row
@@ -287,6 +452,8 @@ emit_triangle(out_mesh *m, face_source *fs, uint32_t i0, uint32_t i1, uint32_t i
     c = output_vertex(m, fs, i2);
     if (a == NO_INDEX || b == NO_INDEX || c == NO_INDEX)
         return -1;
+    if (fs->mirror)
+        return add_triangle(m, a, c, b, fs->textured ? fs->texnum : 0);
     return add_triangle(m, a, b, c, fs->textured ? fs->texnum : 0);
 }
 
@@ -501,11 +668,15 @@ main(int argc, char *argv[])
     uint32_t num_parts = 0, num_products = 0, num_markups = 0;
     uint32_t total_tess = 0, total_line_tess = 0, num_extra = 0;
     uint32_t k, surfaces = 0, skipped = 0, missing_normals = 0;
+    size_t n;
     out_mesh mesh;
     texture_list textures;
+    instance_list instances;
+    uint8_t *tess_drawn = NULL;
 
     memset(&mesh, 0, sizeof(mesh));
     memset(&textures, 0, sizeof(textures));
+    memset(&instances, 0, sizeof(instances));
 
     for (a = 1; a < argc; a++)
     {
@@ -577,7 +748,7 @@ main(int argc, char *argv[])
     {
         prc_api_tess *tess = &tesses[k];
         uint8_t has_lines = 0;
-        uint32_t j, faces_to_walk;
+        uint32_t j;
 
         tess->num_faces = prc_api_get_number_faces(ctx, data, k);
         tess->tess_faces = (prc_api_face *)calloc(tess->num_faces ? tess->num_faces : 1,
@@ -605,6 +776,42 @@ main(int argc, char *argv[])
             }
         }
         surfaces++;
+    }
+
+    if (total_tess > 0)
+    {
+        tess_drawn = (uint8_t *)calloc(total_tess, 1);
+        if (tess_drawn == NULL)
+        {
+            fprintf(stderr, "Error: out of memory\n");
+            goto cleanup;
+        }
+    }
+    if (model_tree != NULL)
+    {
+        prc_api_transform root_transform;
+
+        prc_api_set_transform_identity(ctx, &root_transform);
+        if (collect_instances(ctx, model_tree, root_transform, total_tess, &instances, tess_drawn) != 0)
+        {
+            fprintf(stderr, "Error: out of memory\n");
+            goto cleanup;
+        }
+    }
+    /* A surface tessellation that no part draws is reported, not written.
+       Adobe Acrobat does not draw one either. */
+    for (k = 0; k < total_tess; k++)
+        if (!tess_drawn[k] &&
+            (tesses[k].type == PRC_API_TESS_3D || tesses[k].type == PRC_API_TESS_3D_Compressed))
+            fprintf(stderr, "Warning: tessellation %u is not drawn by any part; not exported\n", k);
+
+    for (n = 0; n < instances.count; n++)
+    {
+        prc_api_tess *tess = &tesses[instances.items[n].tess];
+        uint32_t j, faces_to_walk;
+
+        if (tess->type != PRC_API_TESS_3D && tess->type != PRC_API_TESS_3D_Compressed)
+            continue;
 
         /* A compressed tessellation gives every face the same complete
            mesh -- face_index only selects a style there -- so walking every
@@ -631,6 +838,8 @@ main(int argc, char *argv[])
             }
             for (i = 0; i < (uint32_t)fs.vb->num_vertices; i++)
                 fs.remap[i] = NO_INDEX;
+            fs.xform = &instances.items[n].xform;
+            fs.mirror = transform_mirrors(fs.xform);
 
             fs.per_vertex_material = prc_api_vertices_have_material(ctx, tess, j) ? 1 : 0;
             fs.material = face->is_material ? &face->material
@@ -733,6 +942,8 @@ main(int argc, char *argv[])
 cleanup:
     free(mesh.v); free(mesh.tri); free(mesh.texnum);
     free(textures.t);
+    free(instances.items);
+    free(tess_drawn);
     if (ctx != NULL)
     {
         if (data != NULL)
