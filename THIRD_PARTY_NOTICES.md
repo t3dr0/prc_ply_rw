@@ -48,6 +48,7 @@ types do not have the sizes PLY needs. Neither tool's callback uses that argumen
 
 - Purpose: PNG writing for texture export, used by `ply_export`.
 - Location: `ply_export/src/stb_image_write.h` (v1.16, vendored).
+- Author: Sean Barrett.
 - Source: https://github.com/nothings/stb
 - Licence: public domain (Unlicense) or MIT, at the user's choice. The full text is at the end of the
   header file.
@@ -56,5 +57,5 @@ types do not have the sizes PLY needs. Neither tool's callback uses that argumen
 
 - Purpose: PRC reading and writing; both tools link it.
 - Not included in this repository. Supplied as a separate checkout (see README).
-- Source: https://github.com/mvrhel/nanoPRC
+- Source: https://github.com/CascadiaVoxel/nanoPRC
 - Licence: GNU AGPL v3, with a commercial licence available from its owner.

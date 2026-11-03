@@ -1,7 +1,7 @@
 # prc_ply_rw
 
 Convert PLY (Stanford polygon format) to PRC / 3D PDF and back, using
-[nanoPRC](https://github.com/mvrhel/nanoPRC).
+[nanoPRC](https://github.com/CascadiaVoxel/nanoPRC).
 
 PRC (ISO 14739) is the 3D format embedded in 3D PDF files. This repository holds two command-line
 tools built on nanoPRC's public C API. Both read and write all three PLY encodings — ASCII, binary
