@@ -6,6 +6,7 @@ set(CMAKE_C_STANDARD 99)
 # library of its own.
 add_executable(nano_prc_ply_import
                src/ply_import.c
+               src/model_path.c
                ${RPLY_DIR}/rply.c)
 
 target_link_libraries(nano_prc_ply_import PRIVATE nano_prc)

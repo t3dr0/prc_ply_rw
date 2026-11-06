@@ -33,7 +33,7 @@ What it reads:
 | `face`: `texnumber` | which texture a face uses |
 | `face`: `vertex_indices` (or `vertex_index`) | polygons, triangulated by ear clipping |
 | `tristrips`: `vertex_indices`, `-1` restarting a strip | triangles |
-| `comment TextureFile <image>` | the texture image, PNG or JPEG, relative to the PLY file |
+| `comment TextureFile <image>` | the texture image, PNG or JPEG, found in the PLY's folder (see below) |
 
 - A PLY file has no parts, so the model is one part named after the file. It holds one tessellation,
   or one per texture when a file names several.
@@ -48,6 +48,15 @@ What it reads:
   pixels or more and suggested trying another tolerance.
 - Faces of fewer than three corners, faces that index a missing vertex and triangles with a repeated
   vertex are skipped and counted.
+- Texture images are only ever read from the PLY's folder and its subfolders. A plain relative path
+  down from the PLY (`tex/wood.png`) is used as written. Any other path, such as
+  `C:\Users\me\wood.png` from another machine or `../shared/wood.png`, is reduced to its file name,
+  which is looked for in the PLY's folder and then in its subfolders, nearest first (four levels
+  down at most, alphabetically within a folder, an exact name before one that differs only in
+  letter case). Each substitution is reported, and an image not found that way is left out. Links
+  are not followed.
+- A header with a list of lists (`property list list ...`) is refused: RPly 1.1.4 accepts it and then
+  crashes reading it (CVE-2026-115722).
 
 ## ply_export
 
@@ -67,7 +76,9 @@ with vertices shared as the reader gives them.
   nanoPRC's default material, the terracotta it writes for items that have none, is written without
   colours, so a PLY without colours comes back without them.
 - Textures are written beside the PLY as `<name>_tex_<n>.png`, each distinct image once, named by
-  `comment TextureFile` lines. With more than one texture each face also carries `texnumber`.
+  `comment TextureFile` lines. With more than one texture each face also carries `texnumber`. A
+  texture larger than 2^28 bytes, or with other than 1 to 4 channels, is not written: the PNG writer,
+  stb_image_write v1.16, does not check its size arithmetic (CVE-2026-102805).
 - Positions are written in each tessellation's own coordinates, as `obj_export` writes them: part
   placement transforms are not applied. Wire and markup tessellations are not exported.
 

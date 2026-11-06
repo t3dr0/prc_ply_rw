@@ -44,6 +44,11 @@ Known in the unchanged source: `ply_open_from_file` and `ply_create_to_file` pas
 handle to the error callback if `ply_type_check()` fails, which happens only on a platform whose C
 types do not have the sizes PLY needs. Neither tool's callback uses that argument.
 
+Also known, and unfixed upstream: CVE-2026-115722. `ply_read_header` accepts a list whose length or
+value type is itself `list`, and `ply_read` then calls through its handler table one past the end.
+`ply_import` refuses such a header after `ply_read_header` and before `ply_read`
+(`check_list_types`); RPly itself is left unchanged.
+
 ## stb_image_write
 
 - Purpose: PNG writing for texture export, used by `ply_export`.
@@ -52,6 +57,9 @@ types do not have the sizes PLY needs. Neither tool's callback uses that argumen
 - Source: https://github.com/nothings/stb
 - Licence: public domain (Unlicense) or MIT, at the user's choice. The full text is at the end of the
   header file.
+- Known, and unfixed upstream: CVE-2026-102805, unchecked size arithmetic in `stbi_write_png_to_mem`
+  and the JPEG and TGA writers. `ply_export` writes a texture only when its width, height and
+  channels are sensible and the image is at most 2^28 bytes.
 
 ## nanoPRC
 

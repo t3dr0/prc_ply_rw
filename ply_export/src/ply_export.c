@@ -65,6 +65,20 @@
 
 #define NO_INDEX 0xFFFFFFFFu
 
+/* stb_image_write v1.16 computes image sizes in int without checking them
+   (CVE-2026-102805), and a texture's width, height and channels come from
+   the PRC file. A texture is written only when they are sensible and the
+   image is at most 2^28 bytes, far inside int. */
+#define PLY_EXPORT_MAX_TEXTURE_BYTES (1u << 28)
+
+static int
+texture_fits_png(uint32_t width, uint32_t height, uint32_t channels)
+{
+    if (width == 0 || height == 0 || channels < 1 || channels > 4)
+        return 0;
+    return (uint64_t)width * height * channels <= PLY_EXPORT_MAX_TEXTURE_BYTES;
+}
+
 /* -------------------------------------------------------------------- */
 /* The mesh being assembled                                              */
 /* -------------------------------------------------------------------- */
@@ -186,6 +200,13 @@ texture_index(texture_list *tl, const prc_api_texture *tex, const char *stem_pat
         tl->cap = cap;
     }
     snprintf(full, sizeof(full), "%s_tex_%u.png", stem_path, tl->count);
+    if (!texture_fits_png(tex->width, tex->height, tex->num_channels))
+    {
+        fprintf(stderr, "Warning: texture of %ux%u with %u channels not written (too large, or not "
+                "1 to 4 channels); its faces written untextured\n",
+                (unsigned)tex->width, (unsigned)tex->height, (unsigned)tex->num_channels);
+        return NO_INDEX;
+    }
     if (!stbi_write_png(full, (int)tex->width, (int)tex->height, (int)tex->num_channels,
                         tex->data, (int)(tex->width * tex->num_channels)))
     {

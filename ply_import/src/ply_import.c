@@ -39,6 +39,17 @@
  * Geometry goes out as compressed tessellation by default, textured,
  * coloured or neither. --triangles writes plain triangles instead.
  *
+ * A TextureFile image is found with model_path_resolve, only ever in the
+ * PLY's folder and its subfolders: a plain path down from that folder is
+ * used as written, and any other ("C:\Users\me\x.png", "../x.png",
+ * "/home/me/x.png") is reduced to its file name and searched for, the
+ * substitution reported.
+ *
+ * RPly 1.1.4 accepts a list whose length or value type is itself "list",
+ * and then calls through a handler table past its end when reading it
+ * (CVE-2026-115722). Such a header is refused here (check_list_types),
+ * before ply_read.
+ *
  * Usage:
  *     nano_prc_ply_import <input.ply> [output.prc] [output.pdf]
  *                         [--triangles] [--no-normals] [--no-colors]
@@ -52,6 +63,8 @@
 
 #include <prc_api.h>
 #include <rply.h>
+
+#include "model_path.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -473,19 +486,12 @@ peek_format(const char *path, char *out, size_t size)
     fclose(f);
 }
 
-/* Texture file names from "comment TextureFile <name>" lines, resolved
-   against the directory of the PLY file. */
+/* Texture file names from "comment TextureFile <name>" lines, as the file
+   gives them; they are resolved, within the PLY's folder, when loaded. */
 static void
-collect_texture_files(p_ply ply, const char *ply_path, ply_mesh *m)
+collect_texture_files(p_ply ply, ply_mesh *m)
 {
     const char *c = NULL;
-    const char *slash = strrchr(ply_path, '/');
-    const char *bslash = strrchr(ply_path, '\\');
-    size_t dir_len;
-
-    if (bslash > slash)
-        slash = bslash;
-    dir_len = slash ? (size_t)(slash - ply_path) + 1 : 0;
 
     while ((c = ply_get_next_comment(ply, c)) != NULL)
     {
@@ -510,17 +516,44 @@ collect_texture_files(p_ply ply, const char *ply_path, ply_mesh *m)
         if (len == 0 || m->num_texture_files == MAX_TEXTURE_FILES)
             continue;
 
-        /* An absolute name is taken as it stands. */
-        if (name[0] == '/' || name[0] == '\\' || (len > 1 && name[1] == ':'))
-            dir_len = 0;
-        path = (char *)malloc(dir_len + len + 1);
+        path = (char *)malloc(len + 1);
         if (path == NULL)
             continue;
-        memcpy(path, ply_path, dir_len);
-        memcpy(path + dir_len, name, len);
-        path[dir_len + len] = '\0';
+        memcpy(path, name, len);
+        path[len] = '\0';
         m->texture_files[m->num_texture_files++] = path;
     }
+}
+
+/* Refuse a header with a list whose length or value type is not a scalar
+   type. RPly 1.1.4 accepts "property list list ..." and then, in ply_read,
+   calls through its handler table at that type's index, one past its end
+   (CVE-2026-115722). Returns 0 when every list is sound. */
+static int
+check_list_types(p_ply ply)
+{
+    p_ply_element e = NULL;
+
+    while ((e = ply_get_next_element(ply, e)) != NULL)
+    {
+        p_ply_property p = NULL;
+
+        while ((p = ply_get_next_property(e, p)) != NULL)
+        {
+            const char *name = NULL;
+            e_ply_type type, length_type, value_type;
+
+            if (!ply_get_property_info(p, &name, &type, &length_type, &value_type))
+                return -1;
+            if (type == PLY_LIST && (length_type >= PLY_LIST || value_type >= PLY_LIST))
+            {
+                fprintf(stderr, "property %s is a list of lists, which is not valid PLY\n",
+                        name ? name : "(unnamed)");
+                return -1;
+            }
+        }
+    }
+    return 0;
 }
 
 /* -------------------------------------------------------------------- */
@@ -565,6 +598,8 @@ read_ply(const char *path, ply_mesh *m)
         return -1;
     if (!ply_read_header(ply))
         goto out;
+    if (check_list_types(ply) != 0)
+        goto out;
 
     ve = find_element(ply, "vertex", &m->nv);
     if (ve == NULL || m->nv <= 0 ||
@@ -583,7 +618,7 @@ read_ply(const char *path, ply_mesh *m)
         se = find_element(ply, "tristrips", &ns);
     }
 
-    collect_texture_files(ply, path, m);
+    collect_texture_files(ply, m);
 
     /* Positions, always. */
     m->pos = (double *)calloc((size_t)m->nv * 3, sizeof(double));
@@ -1369,17 +1404,29 @@ main(int argc, char *argv[])
     {
         for (i = 0; i < mesh.num_texture_files; i++)
         {
-            const char *img = mesh.texture_files[i];
             texture_image *ti = &tex[i];
+            char note[1024];
+            char *img = NULL;
+            int found = model_path_resolve(in_path, mesh.texture_files[i], &img, note, sizeof(note));
 
-            if (read_file(img, &ti->bytes, &ti->size) != 0)
-                fprintf(stderr, "warning: texture %s not found, its faces left untextured\n", img);
-            else if (image_format(ti->bytes, ti->size, &ti->format, &ti->width, &ti->height) != 0)
+            if (found == MODEL_PATH_NOT_FOUND)
+                fprintf(stderr, "warning: texture %s; its faces left untextured\n", note);
+            else if (found == MODEL_PATH_NO_MEMORY)
+                fprintf(stderr, "Out of memory\n");
+            else
             {
-                fprintf(stderr, "warning: texture %s is not PNG or JPEG, its faces left untextured\n", img);
-                free(ti->bytes);
-                ti->bytes = NULL;
+                if (found == MODEL_PATH_SUBSTITUTED)
+                    fprintf(stderr, "warning: texture %s\n", note);
+                if (read_file(img, &ti->bytes, &ti->size) != 0)
+                    fprintf(stderr, "warning: texture %s cannot be read, its faces left untextured\n", img);
+                else if (image_format(ti->bytes, ti->size, &ti->format, &ti->width, &ti->height) != 0)
+                {
+                    fprintf(stderr, "warning: texture %s is not PNG or JPEG, its faces left untextured\n", img);
+                    free(ti->bytes);
+                    ti->bytes = NULL;
+                }
             }
+            free(img);
         }
         num_groups = mesh.num_texture_files;
     }
