@@ -971,5 +971,15 @@ cleanup:
             prc_api_release_data(ctx, data, tesses, total_tess, NULL, 0, NULL, 0, model_tree);
         prc_api_release_context(ctx);
     }
+    /* The face arrays and the tessellation array were allocated here, not
+       by nanoPRC, so prc_api_release_data leaves them to us. */
+    if (tesses != NULL)
+    {
+        uint32_t k;
+
+        for (k = 0; k < total_tess; k++)
+            free(tesses[k].tess_faces);
+        free(tesses);
+    }
     return ret;
 }
