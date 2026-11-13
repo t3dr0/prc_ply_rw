@@ -234,4 +234,11 @@ def cases():
         off_text("OFF", [(0.0, 0, 0), (1, 0, 0), (0, 1, 0), ("-0.0", "-0.0", 0)], [(3, 0, 1, 2), (3, 3, 1, 2)]),
         ["--clean"], 0, dict(verts=plain(tri_p), faces=[(0, 1, 2)]),
         dict(welded_vertices_merged="1", duplicate_tris="1"))
+    # 1 and 1.00000000001 differ as doubles but not as float32, which is what
+    # is written and welded
+    add("clean_float32_weld", "off",
+        off_text("OFF", [(0, 0, 0), (1, 0, 0), (0, 1, 0), (1.00000000001, 0, 0), (1, 1, 0)],
+                 [(3, 0, 1, 2), (3, 3, 4, 2)]),
+        ["--clean"], 0, dict(verts=plain([(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0)]), faces=[(0, 1, 2), (1, 3, 2)]),
+        dict(welded_vertices_merged="1", vertices_out="4"))
     return c

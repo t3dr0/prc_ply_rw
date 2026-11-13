@@ -100,7 +100,15 @@ dropped_properties, clean, bytes_out, exit_code`
 `header` is the OFF keyword or the PLY format. `out_of_range_faces` counts faces with an index out
 of range or fewer than 3 vertices. The clean-up counts are empty without `--clean`, and a field the
 run did not reach is empty. `dropped_properties` lists names separated by `;`. The names that also
-appear in `psb_scan.py`'s output mean the same there.
+appear in the output of `psb_scan.py` (below) mean the same there.
+
+## psb_scan.py
+
+`psb_scan.py`, beside this file, scans a folder of OFF meshes (such as a split of the Princeton
+Shape Benchmark) and writes per-model statistics to CSV, with an optional selection rule; see its
+docstring. Its counts follow the clean-up above and can be cross-checked with mesh2ply's report.
+Both weld on coordinates rounded to float32; the one difference is that it welds on position only,
+so a vertex that shares a position but not a colour or normal is merged there and kept here.
 
 ## Exit codes
 
