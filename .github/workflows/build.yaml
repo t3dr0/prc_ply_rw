@@ -51,6 +51,14 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
+      # The goldens are byte-exact, so this also checks that every platform
+      # writes the same bytes.
+      - name: mesh2ply tests
+        run: |
+          if [ -d build/bin/Release ]; then bin=build/bin/Release; else bin=build/bin; fi
+          if [ "$RUNNER_OS" = Windows ]; then py=python; exe=mesh2ply.exe; else py=python3; exe=mesh2ply; fi
+          $py prc_ply_rw/tests/mesh2ply/run_tests.py "$bin/$exe" --fuzz 500
+
       - name: Round-trip the test files through PRC, PDF and all three PLY encodings
         run: |
           if [ -d build/bin/Release ]; then bin=build/bin/Release; else bin=build/bin; fi

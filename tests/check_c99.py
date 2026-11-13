@@ -49,7 +49,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # First-party sources. thirdparty/ is excluded; the bundled stb_image_write.h
 # is still parsed, because ply_export.c includes its implementation.
-SOURCE_GLOBS = ['ply_import/src/*.c', 'ply_export/src/*.c', 'tests/*.c']
+SOURCE_GLOBS = ['ply_import/src/*.c', 'ply_export/src/*.c', 'mesh2ply/src/*.c', 'tests/*.c']
 
 DEFINES = ['-D_CRT_SECURE_NO_WARNINGS']
 

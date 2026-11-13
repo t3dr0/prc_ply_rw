@@ -1,0 +1,4 @@
+# mesh2ply's test inputs and golden outputs are compared byte for byte:
+# never convert their line endings.
+tests/mesh2ply/fixtures/** -text
+tests/mesh2ply/expected/** -text

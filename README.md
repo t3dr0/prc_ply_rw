@@ -11,6 +11,7 @@ little-endian and binary big-endian — through [RPly](http://w3.impa.br/~diego/
 |---|---|---|
 | `nano_prc_ply_import` | PLY → PRC and PDF | Reads a PLY mesh with its normals, colours and texture coordinates, and writes a `.prc` file and a minimal 3D PDF |
 | `nano_prc_ply_export` | PRC or PDF → PLY | Extracts the tessellated surfaces as one PLY mesh, with textures as PNG |
+| `mesh2ply` | OFF or PLY → PLY | Converts a mesh to one fixed binary PLY layout, losslessly or with a counted clean-up; needs no nanoPRC. See [mesh2ply/README.md](mesh2ply/README.md) |
 
 ## ply_import
 
@@ -84,7 +85,8 @@ with vertices shared as the reader gives them.
 
 ## Building
 
-nanoPRC is required. Build either way:
+nanoPRC is required for `ply_import` and `ply_export`. Without `NANOPRC_SOURCE_DIR`, only
+`mesh2ply` is built. Build either way:
 
 **Inside a nanoPRC checkout**, where this repository is a submodule, nanoPRC's own CMake build
 includes it.
