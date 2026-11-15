@@ -14,7 +14,7 @@ on:
         default: main
 
 env:
-  NANOPRC_REPO: mvrhel/nanoPRC
+  NANOPRC_REPO: CascadiaVoxel/nanoPRC
   NANOPRC_REF: ${{ github.event.inputs.nanoprc_ref || 'main' }}
 
 jobs:
