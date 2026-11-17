@@ -42,7 +42,7 @@ if(NOT TARGET nano_prc)
 endif()
 
 # This release's version; the matching git tag is v<version>
-set(PRC_PLY_RW_VERSION "0.1.0")
+set(PRC_PLY_RW_VERSION "0.2.0")
 
 # A function called before it is declared is an implicit declaration, which
 # C99 removed: GCC and Clang refuse it, but MSVC only warns (C4013) and the
