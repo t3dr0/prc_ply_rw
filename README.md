@@ -6,12 +6,15 @@ Convert PLY (Stanford polygon format) to PRC / 3D PDF and back, using
 PRC (ISO 14739) is the 3D format embedded in 3D PDF files. This repository holds two command-line
 tools built on nanoPRC's public C API. Both read and write all three PLY encodings — ASCII, binary
 little-endian and binary big-endian — through [RPly](http://w3.impa.br/~diego/software/rply/).
+Two further utilities prepare PLY meshes for them and need no nanoPRC: `mesh2ply` brings any mesh
+to one fixed PLY layout, and `ply_colourise` adds synthetic vertex colours to a mesh in that layout.
 
 | Tool | Direction | What it does |
 |---|---|---|
 | `nano_prc_ply_import` | PLY → PRC and PDF | Reads a PLY mesh with its normals, colours and texture coordinates, and writes a `.prc` file and a minimal 3D PDF |
 | `nano_prc_ply_export` | PRC or PDF → PLY | Extracts the tessellated surfaces as one PLY mesh, with textures as PNG |
 | `mesh2ply` | OFF or PLY → PLY | Converts a mesh to one fixed binary PLY layout, losslessly or with a counted clean-up; needs no nanoPRC. See [mesh2ply/README.md](mesh2ply/README.md) |
+| `ply_colourise` | PLY → PLY | Adds one colour per vertex, from its coordinate along x, y or z (default y) in Moreland's Smooth Cool Warm colour map, to a mesh in mesh2ply's layout; geometry unchanged; needs no nanoPRC. See [ply_colourise/README.md](ply_colourise/README.md) |
 
 ## ply_import
 
@@ -86,7 +89,7 @@ with vertices shared as the reader gives them.
 ## Building
 
 nanoPRC is required for `ply_import` and `ply_export`. Without `NANOPRC_SOURCE_DIR`, only
-`mesh2ply` is built. Build either way:
+`mesh2ply` and `ply_colourise` are built. Build either way:
 
 **Inside a nanoPRC checkout**, where this repository is a submodule, nanoPRC's own CMake build
 includes it.
@@ -102,16 +105,27 @@ cmake --build build --config Release
 RPly is vendored in `thirdparty/rply` (it has no git repository to take as a submodule), so no
 submodule step is needed.
 
-Both tools are C99. Before opening a pull request, run the C99 check and the round trip:
+All four are C99. Before opening a pull request, run the C99 check and the tests:
 
 ```
 python tests/check_c99.py --nanoprc /path/to/nanoPRC
 bash tests/roundtrip.sh build/bin/Release roundtrip_out
+python tests/mesh2ply/run_tests.py build/bin/Release/mesh2ply.exe
+bash tests/ply_colourise/run_tests.sh build/bin/Release/ply_colourise.exe ply_colourise_test
 ```
 
-`tests/roundtrip.sh` takes each file in `tests/data` through PRC and PDF and all three PLY encodings,
-and compares the result with the original triangle by triangle: positions, winding, colours and
-texture coordinates. `tests/make_test_data.py` regenerates `tests/data`.
+(Without `.exe` on Linux and macOS, and `build/bin` for single-configuration generators.) Run them
+from a scratch folder or give them one: the tools write their outputs to the current folder or the
+folder named.
+
+| Test | What it checks |
+|---|---|
+| `tests/roundtrip.sh` | Takes each file in `tests/data` through PRC and PDF and all three PLY encodings, and compares the result with the original triangle by triangle: positions, winding, colours and texture coordinates. `tests/make_test_data.py` regenerates `tests/data`. |
+| `tests/mesh2ply/run_tests.py` | mesh2ply's fixtures against golden outputs, the lossless round trip, the three PLY encodings of one cube, and mutated inputs that must each exit cleanly. See [mesh2ply/README.md](mesh2ply/README.md#tests). |
+| `tests/ply_colourise/run_tests.sh` | ply_colourise on mesh2ply's unit cube along each axis, the hand-checked rounding case of its specification, `--replace`, the report and the refusals, against values written out in the script. See [ply_colourise/README.md](ply_colourise/README.md#tests). |
+
+The continuous-integration build runs the three tests on Linux, macOS and Windows, and the C99 check
+on Linux.
 
 ## Licence
 

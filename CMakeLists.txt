@@ -7,8 +7,9 @@ cmake_minimum_required(VERSION 3.16 FATAL_ERROR)
 #  - on its own: NANOPRC_SOURCE_DIR names a nanoPRC checkout, which is added
 #    here with its demos, tests and SDL switched off.
 #
-# mesh2ply needs no nanoPRC: on its own without NANOPRC_SOURCE_DIR, only
-# mesh2ply is built, and ply_import and ply_export are left out.
+# mesh2ply and ply_colourise need no nanoPRC: on its own without
+# NANOPRC_SOURCE_DIR, only they are built, and ply_import and ply_export are
+# left out.
 #
 # This repository must never contain nanoPRC as a submodule. nanoPRC contains
 # this one, and each containing the other would nest copies without end under
@@ -35,7 +36,7 @@ if(NOT TARGET nano_prc)
                               RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
     else()
         message(STATUS
-            "No nanoPRC checkout (-DNANOPRC_SOURCE_DIR=<path>): building mesh2ply only")
+            "No nanoPRC checkout (-DNANOPRC_SOURCE_DIR=<path>): building mesh2ply and ply_colourise only")
         set(PRC_PLY_RW_WITH_NANOPRC OFF)
     endif()
 endif()
@@ -61,3 +62,4 @@ if(PRC_PLY_RW_WITH_NANOPRC)
     add_subdirectory(ply_export)
 endif()
 add_subdirectory(mesh2ply)
+add_subdirectory(ply_colourise)

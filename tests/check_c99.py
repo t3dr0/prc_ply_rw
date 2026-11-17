@@ -49,7 +49,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # First-party sources. thirdparty/ is excluded; the bundled stb_image_write.h
 # is still parsed, because ply_export.c includes its implementation.
-SOURCE_GLOBS = ['ply_import/src/*.c', 'ply_export/src/*.c', 'mesh2ply/src/*.c', 'tests/*.c']
+SOURCE_GLOBS = ['ply_import/src/*.c', 'ply_export/src/*.c', 'mesh2ply/src/*.c',
+                'ply_colourise/src/*.c', 'tests/*.c']
 
 DEFINES = ['-D_CRT_SECURE_NO_WARNINGS']
 
@@ -185,7 +186,8 @@ def main():
               'nothing' % tool, file=sys.stderr)
         return 2
 
-    incs = [os.path.join(nanoprc, 'include'), args.rply]
+    # mesh2ply's folder too: ply_colourise uses its header, m2p.h
+    incs = [os.path.join(nanoprc, 'include'), args.rply, os.path.join(REPO, 'mesh2ply', 'src')]
     srcs = sources()
     print('C99 check: %d files via %s (nanoPRC at %s)' % (len(srcs), tool, nanoprc))
 

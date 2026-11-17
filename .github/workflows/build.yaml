@@ -59,6 +59,14 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then py=python; exe=mesh2ply.exe; else py=python3; exe=mesh2ply; fi
           $py prc_ply_rw/tests/mesh2ply/run_tests.py "$bin/$exe" --fuzz 500
 
+      # Every expected value is written out in the script, so this also
+      # checks that every platform writes the same colours.
+      - name: ply_colourise tests
+        run: |
+          if [ -d build/bin/Release ]; then bin=build/bin/Release; else bin=build/bin; fi
+          if [ "$RUNNER_OS" = Windows ]; then exe=ply_colourise.exe; else exe=ply_colourise; fi
+          bash prc_ply_rw/tests/ply_colourise/run_tests.sh "$bin/$exe" ply_colourise_test
+
       - name: Round-trip the test files through PRC, PDF and all three PLY encodings
         run: |
           if [ -d build/bin/Release ]; then bin=build/bin/Release; else bin=build/bin; fi
