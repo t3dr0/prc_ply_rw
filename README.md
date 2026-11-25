@@ -111,6 +111,7 @@ All four are C99. Before opening a pull request, run the C99 check and the tests
 python tests/check_c99.py --nanoprc /path/to/nanoPRC
 bash tests/roundtrip.sh build/bin/Release roundtrip_out
 python tests/mesh2ply/run_tests.py build/bin/Release/mesh2ply.exe
+python tests/mesh_stats/run_tests.py
 bash tests/ply_colourise/run_tests.sh build/bin/Release/ply_colourise.exe ply_colourise_test
 ```
 

@@ -110,6 +110,23 @@ docstring. Its counts follow the clean-up above and can be cross-checked with me
 Both weld on coordinates rounded to float32; the one difference is that it welds on position only,
 so a vertex that shares a position but not a colour or normal is merged there and kept here.
 
+## mesh_topology.py and vertex_distance.py
+
+Two scripts beside this file measure meshes in mesh2ply's layout. They need numpy and scipy, which
+the other tools here do not; see each docstring for the full definitions.
+
+`mesh_topology.py` reports, per mesh, the counts of vertices, edges, triangles, components and
+boundary loops, the genus, non-manifold edges and vertices, the boundary vertex fraction, the mean
+and standard deviation of valence, and the smallest interior angle of each triangle as a median and
+the fraction below 10 degrees. Lucy (28 million triangles) takes under two minutes.
+
+`vertex_distance.py` compares an original mesh with its copy decoded from PRC (ply_import, then
+ply_export). It gives the distance from each decoded vertex to the nearest original vertex and back,
+and with `--quant-tolerance` counts the vertices further than sqrt(3)/2 of the tolerance from any
+original vertex, the most that rounding on three axes can move one. `--metro` adds the symmetric
+Metro surface distance (Hausdorff and RMS) from PyMeshLab, which is then needed too. Both scripts
+read ply_export's output directly, and write one CSV row per mesh or pair with `--csv`.
+
 ## Exit codes
 
 0 done; 1 usage; 2 I/O error; 3 parse error; 4 invalid mesh; 5 not supported (4D or nD OFF, a
@@ -126,3 +143,12 @@ the round trip (every output, converted again, is byte-identical), the three PLY
 cube (one output), and a loop of mutated inputs that must each exit with a code from 0 to 5.
 `tests/mesh2ply/cases.py` holds the cases and their expected meshes, written out by hand;
 `--regenerate` rewrites the fixtures and goldens from it.
+
+```
+python tests/mesh_stats/run_tests.py
+```
+
+tests the two measuring scripts on small meshes with known answers (a tetrahedron, two tetrahedra
+meeting at one vertex, a square, a bow-tie, a sliver with a zero-area triangle, and a tetrahedron
+moved a known distance), with both the old and the sized PLY type names. Its `--metro` cases run only
+when PyMeshLab is installed.
